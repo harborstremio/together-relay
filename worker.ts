@@ -3,28 +3,6 @@ export interface Env {
 }
 
 const ALLOWED_PATH = /^\/r\/([A-Z0-9]{4,8})$/;
-const PROXY_HOSTS = new Set([
-  "api.knaben.org",
-  "apibay.org",
-  "1337x.bz",
-  "yts.mx",
-  "eztv.re",
-]);
-const RATE_LIMIT = 60;
-const RATE_WINDOW_MS = 60_000;
-const RATE_BUCKET = new Map<string, { count: number; windowStart: number }>();
-
-function checkRate(ip: string | null): boolean {
-  if (!ip) return true;
-  const now = Date.now();
-  const entry = RATE_BUCKET.get(ip);
-  if (!entry || now - entry.windowStart > RATE_WINDOW_MS) {
-    RATE_BUCKET.set(ip, { count: 1, windowStart: now });
-    return true;
-  }
-  entry.count += 1;
-  return entry.count <= RATE_LIMIT;
-}
 
 export default {
   async fetch(req: Request, env: Env): Promise<Response> {
@@ -35,8 +13,6 @@ export default {
         headers: { "content-type": "text/plain", "access-control-allow-origin": "*" },
       });
     }
-
-    if (url.pathname === "/proxy") return handleProxy(req, url);
 
     const m = url.pathname.match(ALLOWED_PATH);
     if (!m) return new Response("not found", { status: 404 });
@@ -51,62 +27,6 @@ export default {
     return stub.fetch(req);
   },
 };
-
-async function handleProxy(req: Request, url: URL): Promise<Response> {
-  if (req.method === "OPTIONS") {
-    return new Response(null, {
-      status: 204,
-      headers: {
-        "access-control-allow-origin": "*",
-        "access-control-allow-methods": "GET, POST, OPTIONS",
-        "access-control-allow-headers": "content-type",
-      },
-    });
-  }
-  const ip = req.headers.get("cf-connecting-ip");
-  if (!checkRate(ip)) {
-    return new Response("rate limit exceeded", {
-      status: 429,
-      headers: { "access-control-allow-origin": "*", "retry-after": "60" },
-    });
-  }
-  const target = url.searchParams.get("u");
-  if (!target) return new Response("missing u", { status: 400 });
-  let parsed: URL;
-  try {
-    parsed = new URL(target);
-  } catch {
-    return new Response("bad u", { status: 400 });
-  }
-  if (parsed.protocol !== "https:" || !PROXY_HOSTS.has(parsed.hostname)) {
-    return new Response("host not allowed", { status: 403 });
-  }
-  const init: RequestInit = {
-    method: req.method,
-    headers: {
-      "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-      accept: req.headers.get("accept") || "application/json",
-    },
-  };
-  if (req.method !== "GET" && req.method !== "HEAD") {
-    init.body = await req.arrayBuffer();
-    const ct = req.headers.get("content-type");
-    if (ct) (init.headers as Record<string, string>)["content-type"] = ct;
-  }
-  let upstream: Response;
-  try {
-    upstream = await fetch(parsed.toString(), init);
-  } catch {
-    return new Response("upstream fetch failed", { status: 502 });
-  }
-  return new Response(upstream.body, {
-    status: upstream.status,
-    headers: {
-      "content-type": upstream.headers.get("content-type") || "application/json",
-      "access-control-allow-origin": "*",
-    },
-  });
-}
 
 type Participant = {
   id: string;
